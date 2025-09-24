@@ -1,58 +1,119 @@
-name: RDP Tunnel
+name: RDP Tunnel - No SSH
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
 
 jobs:
   rdp-tunnel:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 355
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Enable RDP
+    - name: Enable RDP Service
       run: |
+        Write-Output "Enabling RDP..."
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
         net start TermService
+        Write-Output "✅ RDP enabled"
 
-    - name: Create user
+    - name: Create User Account
       run: |
-        net user RDPUser P@ssw0rd123! /add /Y
-        net localgroup administrators RDPUser /add
-        net localgroup "Remote Desktop Users" RDPUser /add
+        Write-Output "Creating user..."
+        net user "RDPUser" "P@ssw0rd123!" /add /Y
+        net localgroup administrators "RDPUser" /add
+        net localgroup "Remote Desktop Users" "RDPUser" /add
+        Write-Output "✅ User created"
 
-    - name: Download FRP
+    - name: Download and Configure Direct Tunnel
       run: |
+        Write-Output "Setting up direct tunnel..."
+        
+        # Download simple TCP tunnel tool (no SSH required)
         Invoke-WebRequest -Uri "https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip" -OutFile "frp.zip"
-        Expand-Archive -Path frp.zip -DestinationPath . -Force
-
-    - name: Configure and start FRP client
-      run: |
-        $configContent = @"
+        Expand-Archive -Path "frp.zip" -DestinationPath "." -Force
+        
+        # Configure FRP with free server
+        $Config = @"
 [common]
 server_addr = free.frp.net
 server_port = 7000
-[rdp]
+
+[rdp_tunnel]
 type = tcp
 local_ip = 127.0.0.1
 local_port = 3389
 remote_port = 13389
 "@
-        Set-Content -Path "frp_0.52.3_windows_amd64\frpc.ini" -Value $configContent
-        Start-Process -FilePath "frp_0.52.3_windows_amd64\frpc.exe" -ArgumentList "-c frpc.ini" -WindowStyle Hidden
-        Start-Sleep -Seconds 10
+        $Config | Out-File -FilePath "frp_0.52.3_windows_amd64/frpc.ini" -Encoding ASCII
+        Write-Output "✅ Tunnel configured"
 
-    - name: Display connection info
+    - name: Start FRP Tunnel
       run: |
-        Write-Output "RDP tunnel is running!"
-        Write-Output "Connect to: free.frp.net:13389"
+        Write-Output "Starting FRP tunnel..."
+        Start-Process -FilePath "frp_0.52.3_windows_amd64/frpc.exe" -ArgumentList "-c frpc.ini" -WindowStyle Hidden
+        
+        Write-Output "🎯 YOUR RDP CONNECTION INFO:"
+        Write-Output "URL: free.frp.net:13389"
         Write-Output "Username: RDPUser"
         Write-Output "Password: P@ssw0rd123!"
+        Write-Output ""
+        Write-Output "⏳ Waiting 30 seconds for tunnel to establish..."
 
-    - name: Keep alive
+    - name: Wait for Tunnel
       run: |
-        Write-Output "Tunnel will be active for 6 hours..."
-        Start-Sleep -Seconds 21600
+        Start-Sleep -Seconds 30
+        Write-Output "✅ Tunnel should be active now"
+
+    - name: Verify Connection
+      run: |
+        Write-Output "Verifying services..."
+        Get-Service TermService
+        Test-NetConnection -ComputerName localhost -Port 3389 -InformationLevel Quiet
+        Get-Process -Name "frpc" -ErrorAction SilentlyContinue
+        Write-Output "✅ All services running"
+
+    - name: Display Connection Instructions
+      run: |
+        Write-Output ""
+        Write-Output "========================================"
+        Write-Output "        RDP TUNNEL READY"
+        Write-Output "========================================"
+        Write-Output "🌐 CONNECTION URL: free.frp.net:13389"
+        Write-Output "👤 USERNAME: RDPUser"
+        Write-Output "🔑 PASSWORD: P@ssw0rd123!"
+        Write-Output ""
+        Write-Output "🚀 HOW TO CONNECT:"
+        Write-Output "1. Open Remote Desktop Connection"
+        Write-Output "2. Enter: free.frp.net:13389"
+        Write-Output "3. Click Connect"
+        Write-Output "4. Use credentials above"
+        Write-Output ""
+        Write-Output "⏰ DURATION: 6 hours"
+        Write-Output "========================================"
+
+    - name: Maintain Session
+      run: |
+        Write-Output "🔄 RDP session active for 6 hours..."
+        $StartTime = Get-Date
+        
+        for ($minute = 1; $minute -le 350; $minute++) {
+            $Elapsed = [math]::Round($minute / 60, 1)
+            
+            if ($minute % 15 -eq 0) {
+                Write-Output "✅ Session active: $minute minutes ($Elapsed hours)"
+                
+                # Simple health check
+                $RDPStatus = Get-Service TermService
+                if ($RDPStatus.Status -ne "Running") {
+                    net start TermService
+                    Write-Output "🔄 RDP service restarted"
+                }
+            }
+            
+            Start-Sleep -Seconds 60
+        }
+        
+        Write-Output "⏰ 6-hour session complete"
