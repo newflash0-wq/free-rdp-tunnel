@@ -1,0 +1,28 @@
+name: RDP Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    steps:
+    - name: Enable RDP
+      run: |
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+    
+    - name: Create User
+      run: |
+        net user RDPUser P@ssw0rd123! /add /Y
+        net localgroup administrators RDPUser /add
+    
+    - name: Display Info
+      run: |
+        echo "RDP Enabled"
+        echo "User: RDPUser"
+        echo "Pass: P@ssw0rd123!"
+    
+    - name: Keep Alive
+      run: |
+        timeout /t 300
