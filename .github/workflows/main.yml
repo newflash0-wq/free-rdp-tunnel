@@ -1,88 +1,56 @@
-name: Free RDP Tunnel - No Payment Required
-
+name: RDP Tunnel Free Access
 on: 
-  push:
-    branches: [ main ]
   workflow_dispatch:
-
-env:
-  RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+  push:
+    branches: [main, master]
 
 jobs:
-  free-rdp:
+  rdp-setup:
     runs-on: windows-latest
-    timeout-minutes: 360
-    
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Remove Windows RDP Restrictions
+    - name: Enable RDP and Bypass Restrictions
       run: |
-        # Bypass licensing and connection limits
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v MaxInstanceCount /t REG_DWORD /d 4294967295 /f
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v LicensingMode /t REG_DWORD /d 4 /f
+        # Enable RDP
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         
-        # Remove time restrictions
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v MaxConnectionTime /t REG_DWORD /d 0 /f
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v MaxIdleTime /t REG_DWORD /d 0 /f
-
-    - name: Configure Firewall for RDP
+        # Bypass connection limits
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "MaxInstanceCount" -Value 999
+        
+        # Configure firewall
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        netsh advfirewall firewall add rule name="RDP-Custom" dir=in action=allow protocol=TCP localport=3389
+        
+    - name: Create User Account
       run: |
-        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-        New-NetFirewallRule -DisplayName "RDP-Unlimited" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow
-
-    - name: Create RDP User Account
-      run: |
-        $securePassword = ConvertTo-SecureString "$env:RDP_PASSWORD" -AsPlainText -Force
-        New-LocalUser -Name "RDPUser" -Password $securePassword -FullName "RDP Access"
+        $password = ConvertTo-SecureString "Password123!" -AsPlainText -Force
+        New-LocalUser -Name "RDPUser" -Password $password -FullName "RDP User"
         Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
-
-    - name: Download Free Tunneling Tools
+        
+    - name: Install Cloudflared Tunnel
       run: |
-        # Cloudflared (Primary - Free)
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
         
-        # FRP (Backup - Free)
-        Invoke-WebRequest -Uri "https://github.com/fratedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip" -OutFile "frp.zip"
-        Expand-Archive -Path "frp.zip" -DestinationPath "frp" -Force
-
-    - name: Start Free Tunnels
+    - name: Start RDP Tunnel
       run: |
-        # Tunnel 1: Cloudflared
+        # Start Cloudflared in background
         Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389" -WindowStyle Hidden
         
-        # Tunnel 2: FRP with free server
-        $frpConfig = @"
-[common]
-server_addr = free.frp.net
-server_port = 7000
-[rdp]
-type = tcp
-local_ip = 127.0.0.1
-local_port = 3389
-remote_port = 13389
-"@
-        $frpConfig | Out-File -FilePath "frp\frpc.ini" -Encoding ASCII
-        Start-Process -FilePath "frp\frpc.exe" -ArgumentList "-c frp/frpc.ini" -WindowStyle Hidden
+        # Wait for tunnel to initialize
+        Start-Sleep -Seconds 30
         
-        # Tunnel 3: Serveo SSH
-        Start-Job -ScriptBlock {
-            ssh -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net
-        }
-
-    - name: Display Connection Information
+    - name: Display Connection Info
       run: |
-        Write-Output "=== FREE RDP TUNNEL READY ==="
+        Write-Output "=== RDP TUNNEL READY ==="
         Write-Output "Username: RDPUser"
-        Write-Output "Password: [Check GitHub Secrets]"
-        Write-Output "Tunnels Active: Cloudflared, FRP, Serveo"
-        Write-Output "Wait 1-2 minutes for tunnels to initialize"
-        Write-Output "Check workflow logs for tunnel URLs"
-
-    - name: Maintain Connection
+        Write-Output "Password: Password123!"
+        Write-Output "Port: 3389"
+        Write-Output "Tunnel: Cloudflared (check logs for URL)"
+        Write-Output "Workflow will run for 1 hour..."
+        
+    - name: Keep Alive
       run: |
-        # Keep alive for 6 hours
-        Start-Sleep -Seconds 21600
+        Start-Sleep -Seconds 3600
