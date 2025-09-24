@@ -1,9 +1,13 @@
-name: RDP Tunnel - Modern
+name: Free RDP Tunnel - Cloudflared (Free, retry, fixed)
 
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
+
+env:
+  RDP_USER: "RDPAdmin"
+  RDP_PASS: "P@ssw0rd123!"
 
 jobs:
   rdp-tunnel:
@@ -11,83 +15,176 @@ jobs:
     timeout-minutes: 355
 
     steps:
-    - name: Enable RDP Service
-      run: |
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-        netsh advfirewall firewall set rule group "remote desktop" new enable=Yes
-        net start TermService
-        Write-Output "✅ RDP service enabled"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Create User Account
-      run: |
-        net user RDPUser P@ssw0rd123! /add /Y
-        net localgroup administrators RDPUser /add
-        net localgroup "Remote Desktop Users" RDPUser /add
-        Write-Output "✅ User account created"
+      - name: Enable RDP Service
+        shell: pwsh
+        run: |
+          reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          if ((Get-Service -Name TermService).Status -ne 'Running') {
+            Start-Service -Name TermService
+          }
 
-    - name: Download Cloudflared
-      run: |
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
-        Write-Output "✅ Cloudflared downloaded"
+      - name: Create User Account (robust)
+        shell: pwsh
+        run: |
+          $User = $env:RDP_USER
+          $Pass = $env:RDP_PASS
 
-    - name: Start Cloudflared Tunnel
-      run: |
-        $RandomID = Get-Random -Minimum 1000 -Maximum 9999
-        Write-Output "🎯 YOUR RDP URL: rdp-$RandomID.trycloudflare.com:3389"
-        Write-Output "👤 USERNAME: RDPUser"
-        Write-Output "🔑 PASSWORD: P@ssw0rd123!"
-        
-        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389" -WindowStyle Hidden
-        Write-Output "✅ Cloudflared tunnel started"
+          Write-Output "Creating or updating local user: $User"
 
-    - name: Wait for Tunnel Initialization
-      run: |
-        Write-Output "⏳ Waiting 60 seconds for tunnel to initialize..."
-        Start-Sleep -Seconds 60
-        Write-Output "✅ Tunnel should be active now"
-
-    - name: Display Connection Instructions
-      run: |
-        Write-Output ""
-        Write-Output "========================================"
-        Write-Output "         RDP TUNNEL READY"
-        Write-Output "========================================"
-        Write-Output "🌐 CONNECTION URL: Use the URL above"
-        Write-Output "   Format: rdp-XXXX.trycloudflare.com:3389"
-        Write-Output ""
-        Write-Output "👤 CREDENTIALS:"
-        Write-Output "Username: RDPUser"
-        Write-Output "Password: P@ssw0rd123!"
-        Write-Output ""
-        Write-Output "🚀 CONNECTION STEPS:"
-        Write-Output "1. Open Remote Desktop Connection"
-        Write-Output "2. Enter the URL from above"
-        Write-Output "3. Use credentials above"
-        Write-Output "4. Accept certificate warning"
-        Write-Output ""
-        Write-Output "⏰ DURATION: 6 hours"
-        Write-Output "========================================"
-
-    - name: Maintain RDP Session
-      run: |
-        Write-Output "🔄 RDP session active for 6 hours..."
-        $StartTime = Get-Date
-        
-        for ($minute = 1; $minute -le 350; $minute++) {
-            $Elapsed = [math]::Round($minute / 60, 1)
-            
-            if ($minute % 10 -eq 0) {
-                Write-Output "✅ Session active: $minute minutes ($Elapsed hours)"
-                
-                # Simple health check
-                $RDPStatus = Get-Service TermService
-                if ($RDPStatus.Status -ne "Running") {
-                    net start TermService
-                    Write-Output "🔄 RDP service restarted"
-                }
+          # Prefer using Get-LocalUser / New-LocalUser if available
+          $localUserCmd = Get-Command -Name Get-LocalUser -ErrorAction SilentlyContinue
+          if ($localUserCmd) {
+            $existing = Get-LocalUser -Name $User -ErrorAction SilentlyContinue
+            if ($existing) {
+              Write-Output "Local user exists — updating password."
+              try {
+                $secure = ConvertTo-SecureString $Pass -AsPlainText -Force
+                Set-LocalUser -Name $User -Password $secure -ErrorAction Stop
+              } catch {
+                Write-Output "Set-LocalUser failed, falling back to net user to update password."
+                net user $User $Pass
+              }
+            } else {
+              Write-Output "Local user not found — creating user."
+              try {
+                $secure = ConvertTo-SecureString $Pass -AsPlainText -Force
+                New-LocalUser -Name $User -Password $secure -FullName $User -PasswordNeverExpires -ErrorAction Stop
+              } catch {
+                Write-Output "New-LocalUser failed, falling back to net user to create account."
+                net user $User $Pass /add
+              }
             }
-            
+          } else {
+            # Fallback: use net user and inspect exit code
+            $out = net user $User 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Output "net user reports user not found — creating with net user."
+              net user $User $Pass /add
+            } else {
+              Write-Output "net user reports user exists — updating password."
+              net user $User $Pass
+            }
+          }
+
+          # Add to groups (no-op if already present)
+          try { net localgroup administrators $User /add } catch { Write-Output "Add to Administrators may have failed (ignored)." }
+          try { net localgroup "Remote Desktop Users" $User /add } catch { Write-Output "Add to Remote Desktop Users may have failed (ignored)." }
+
+      - name: Download Cloudflared
+        shell: pwsh
+        run: |
+          $cf = Join-Path $PWD 'cloudflared.exe'
+          Write-Output "Downloading cloudflared..."
+          Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile $cf -UseBasicParsing
+          Write-Output "Downloaded cloudflared to $cf"
+
+      - id: cloudflared-start
+        name: Start Cloudflared RDP Tunnel (retry, non-fatal, fixed)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $log = Join-Path $PWD 'cloudflared.log'
+          # Ensure a log file exists so upload-artifact won't fail due to missing file
+          New-Item -Path $log -ItemType File -Force | Out-Null
+
+          $cf = Join-Path $PWD 'cloudflared.exe'
+          $maxAttempts = 6
+          $attempt = 0
+          $found = $null
+
+          Write-Output "Attempting to start cloudflared up to $maxAttempts times..."
+
+          while (($attempt -lt $maxAttempts) -and (-not $found)) {
+            $attempt++
+            # prepend attempt header safely using format operator to avoid ambiguous $() interpolation
+            $header = "`n===== CLOUDLFARED ATTEMPT {0}: {1} =====`n" -f $attempt, (Get-Date -Format o)
+            Add-Content -Path $log -Value $header
+
+            Write-Output "=== Attempt $attempt of $maxAttempts ==="
+
+            # Kill any stray cloudflared processes
+            try {
+              Get-Process -Name cloudflared -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+            } catch {
+              # ignore
+            }
+
+            # Start cloudflared and redirect output to the log (Start-Process supports redirection on pwsh)
+            try {
+              Start-Process -FilePath $cf -ArgumentList 'tunnel','--url','rdp://localhost:3389' `
+                -RedirectStandardOutput $log -RedirectStandardError $log -NoNewWindow -WindowStyle Hidden
+            } catch {
+              Write-Output "Failed to start cloudflared process: $($_.Exception.Message)"
+            }
+
+            # Wait for cloudflared to initialize and write the URL
+            $waitSeconds = 30
+            Write-Output "Waiting $waitSeconds seconds for cloudflared to initialize..."
+            Start-Sleep -Seconds $waitSeconds
+
+            # Try to read the log and extract trycloudflare URL
+            if (Test-Path $log) {
+              $content = Get-Content -Path $log -Raw -ErrorAction SilentlyContinue
+              if ($content) {
+                $m = [regex]::Match($content, 'https?://[A-Za-z0-9\-\._]+\.trycloudflare\.com(:\d+)?')
+                if ($m.Success) {
+                  $found = $m.Value
+                  Write-Output "Found public URL in log: $found"
+                } else {
+                  Write-Output "No trycloudflare URL found in attempt $attempt."
+                }
+              } else {
+                Write-Output "cloudflared log exists but is empty so far."
+              }
+            } else {
+              Write-Output "cloudflared.log not present yet."
+            }
+
+            if (-not $found) {
+              Write-Output "Stopping cloudflared (if any) and retrying..."
+              try {
+                Get-Process -Name cloudflared -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+              } catch { }
+              Start-Sleep -Seconds 3
+            }
+          }
+
+          if ($found) {
+            Write-Output "SUCCESS: Cloudflared public URL: $found"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value ("CLOUD_URL=$found")
+          } else {
+            Write-Output "WARNING: Could not discover trycloudflare URL after $maxAttempts attempts."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "CLOUD_URL=UNKNOWN"
+          }
+
+      - name: Display Connection Info
+        shell: pwsh
+        run: |
+          $url = '${{ steps.cloudflared-start.outputs.CLOUD_URL }}'
+          if ($url -eq 'UNKNOWN') {
+            Write-Output "❌ Cloudflared URL not found. Check cloudflared.log artifact."
+          } else {
+            Write-Output "✅ RDP ready! Public URL: $url"
+            Write-Output "User: $env:RDP_USER"
+            Write-Output "Pass: $env:RDP_PASS"
+          }
+
+      - name: Upload Cloudflared Log
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflared-log
+          path: cloudflared.log
+
+      - name: Maintain Session (heartbeat)
+        shell: pwsh
+        run: |
+          Write-Output "🔄 Maintaining session output for visibility (prints heartbeat every minute)."
+          for ($i = 1; $i -le 360; $i++) {
+            $hours = [math]::Round($i / 60, 2)
+            Write-Output ("⏱️  Active: {0} minutes ({1} hours)" -f $i, $hours)
             Start-Sleep -Seconds 60
-        }
-        
-        Write-Output "⏰ 6-hour session complete"
+          }
