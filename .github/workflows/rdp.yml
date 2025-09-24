@@ -4,25 +4,55 @@ on:
   workflow_dispatch:
 
 jobs:
-  rdp:
+  rdp-tunnel:
     runs-on: windows-latest
+    timeout-minutes: 360
+
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Enable RDP
       run: |
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-    
-    - name: Create User
+        net start TermService
+
+    - name: Create user
       run: |
         net user RDPUser P@ssw0rd123! /add /Y
         net localgroup administrators RDPUser /add
-    
-    - name: Display Info
+        net localgroup "Remote Desktop Users" RDPUser /add
+
+    - name: Download FRP
       run: |
-        echo "RDP Enabled"
-        echo "User: RDPUser"
-        echo "Pass: P@ssw0rd123!"
-    
-    - name: Keep Alive
+        Invoke-WebRequest -Uri "https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip" -OutFile "frp.zip"
+        Expand-Archive -Path frp.zip -DestinationPath . -Force
+
+    - name: Configure and start FRP client
       run: |
-        timeout /t 300
+        $configContent = @"
+[common]
+server_addr = free.frp.net
+server_port = 7000
+[rdp]
+type = tcp
+local_ip = 127.0.0.1
+local_port = 3389
+remote_port = 13389
+"@
+        Set-Content -Path "frp_0.52.3_windows_amd64\frpc.ini" -Value $configContent
+        Start-Process -FilePath "frp_0.52.3_windows_amd64\frpc.exe" -ArgumentList "-c frpc.ini" -WindowStyle Hidden
+        Start-Sleep -Seconds 10
+
+    - name: Display connection info
+      run: |
+        Write-Output "RDP tunnel is running!"
+        Write-Output "Connect to: free.frp.net:13389"
+        Write-Output "Username: RDPUser"
+        Write-Output "Password: P@ssw0rd123!"
+
+    - name: Keep alive
+      run: |
+        Write-Output "Tunnel will be active for 6 hours..."
+        Start-Sleep -Seconds 21600
