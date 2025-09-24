@@ -1,4 +1,4 @@
-name: RDP Tunnel - Complete
+name: RDP Tunnel - Firewall Fixed
 
 on:
   workflow_dispatch:
@@ -12,72 +12,73 @@ jobs:
 
     steps:
     - name: Enable RDP Service
-      run: reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+      run: |
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        echo "✅ RDP service enabled via registry"
 
-    - name: Configure Firewall
-      run: netsh advfirewall firewall set rule group "remote desktop" new enable=Yes
+    - name: Basic Firewall Configuration
+      run: |
+        # Simple firewall command that works on GitHub Actions
+        netsh firewall set portopening TCP 3389 "RDP" ENABLE
+        echo "✅ Basic firewall rule added"
 
     - name: Create User Account
-      run: net user RDPUser P@ssw0rd123! /add /Y
-
-    - name: Add to Admin Group
-      run: net localgroup administrators RDPUser /add
-
-    - name: Add to RDP Group
-      run: net localgroup "Remote Desktop Users" RDPUser /add
+      run: |
+        net user RDPUser P@ssw0rd123! /add /Y
+        net localgroup administrators RDPUser /add
+        net localgroup "Remote Desktop Users" RDPUser /add
+        echo "✅ User account created"
 
     - name: Download FRP Tunnel
       run: |
-        curl -L https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip -o frp.zip
+        curl -L -o frp.zip https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip
         tar -xf frp.zip
+        echo "✅ FRP downloaded"
 
-    - name: Create FRP Config
+    - name: Create FRP Configuration
       run: |
-        echo [common] > frp_0.52.3_windows_amd64/frpc.ini
-        echo server_addr = free.frp.net >> frp_0.52.3_windows_amd64/frpc.ini
-        echo server_port = 7000 >> frp_0.52.3_windows_amd64/frpc.ini
-        echo [rdp] >> frp_0.52.3_windows_amd64/frpc.ini
-        echo type = tcp >> frp_0.52.3_windows_amd64/frpc.ini
-        echo local_ip = 127.0.0.1 >> frp_0.52.3_windows_amd64/frpc.ini
-        echo local_port = 3389 >> frp_0.52.3_windows_amd64/frpc.ini
-        echo remote_port = 13389 >> frp_0.52.3_windows_amd64/frpc.ini
+        echo [common] > frp/frpc.ini
+        echo server_addr = free.frp.net >> frp/frpc.ini
+        echo server_port = 7000 >> frp/frpc.ini
+        echo [rdp] >> frp/frpc.ini
+        echo type = tcp >> frp/frpc.ini
+        echo local_ip = 127.0.0.1 >> frp/frpc.ini
+        echo local_port = 3389 >> frp/frpc.ini
+        echo remote_port = 13389 >> frp/frpc.ini
+        echo "✅ FRP config created"
 
     - name: Start FRP Tunnel
       run: |
-        cd frp_0.52.3_windows_amd64
+        cd frp
         Start-Process -FilePath "frpc.exe" -ArgumentList "-c frpc.ini" -WindowStyle Hidden
         cd ..
+        echo "✅ FRP tunnel started"
 
-    - name: Display Connection Info
+    - name: Display Connection Information
       run: |
         echo "========================================"
-        echo "           RDP TUNNEL READY"
+        echo "        RDP TUNNEL READY"
         echo "========================================"
         echo "URL: free.frp.net:13389"
         echo "Username: RDPUser"
         echo "Password: P@ssw0rd123!"
         echo ""
-        echo "Connection Steps:"
-        echo "1. Remote Desktop Connection"
-        echo "2. Computer: free.frp.net:13389"
-        echo "3. Use credentials above"
-        echo "4. Accept certificate warning"
+        echo "Wait 60 seconds for tunnel to initialize"
         echo "========================================"
 
-    - name: Wait for Tunnel
+    - name: Wait for Initialization
       run: |
-        Start-Sleep -Seconds 30
-        echo "Tunnel should be active now"
+        Start-Sleep -Seconds 60
+        echo "✅ Tunnel should be active now"
 
-    - name: Maintain Session
+    - name: Simple Session Maintenance
       run: |
-        $counter = 1
-        while ($counter -le 350) {
-            if ($counter % 10 -eq 0) {
-                $hours = [math]::Round($counter / 60, 1)
-                echo "RDP active: $counter minutes ($hours hours)"
-            }
-            Start-Sleep -Seconds 60
-            $counter++
-        }
-        echo "6-hour session complete"
+        echo "RDP session active for 6 hours..."
+        for i in {1..350}; do
+          if [ $((i % 10)) -eq 0 ]; then
+            hours=$(echo "scale=1; $i/60" | bc)
+            echo "Active: $i minutes ($hours hours)"
+          fi
+          sleep 60
+        done
+        echo "Session complete"
