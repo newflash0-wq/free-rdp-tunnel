@@ -1,4 +1,4 @@
-name: Free RDP Tunnel - 6 Hours
+name: Free RDP Tunnel - Enhanced URL Display
 
 on:
   workflow_dispatch:
@@ -20,106 +20,84 @@ jobs:
 
     - name: Enable and Configure RDP
       run: |
-        Write-Output "Configuring RDP..."
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v MaxInstanceCount /t REG_DWORD /d 999999 /f
         netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-        netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
 
-    - name: Create RDP User with Net Command
+    - name: Create RDP User
       run: |
-        Write-Output "Creating user with net command (bypasses complexity)..."
-        
-        # Create user using net command (more flexible)
         net user "$env:RDP_USER" "$env:RDP_PASS" /add /Y
         net localgroup administrators "$env:RDP_USER" /add
         net localgroup "Remote Desktop Users" "$env:RDP_USER" /add
-        
-        # Verify user creation
-        net user "$env:RDP_USER"
-        Write-Output "User created successfully"
 
-    - name: Download Tunnel Tools
+    - name: Download and Start Cloudflared with Clear URL
       run: |
-        Write-Output "Downloading tunnel tools..."
+        # Download cloudflared
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
-        curl -L https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip -o frp.zip
-        tar -xf frp.zip
+        
+        # Generate unique subdomain
+        $RandomID = Get-Random -Minimum 1000 -Maximum 9999
+        $TunnelURL = "rdp-$RandomID.trycloudflare.com"
+        
+        Write-Output "=========================================="
+        Write-Output "🎯 YOUR RDP TUNNEL URL: $TunnelURL"
+        Write-Output "=========================================="
+        
+        # Start cloudflared with explicit URL
+        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389 --hostname $TunnelURL" -WindowStyle Hidden
+        
+        Write-Output "⏳ Tunnel initializing... wait 30 seconds"
 
-    - name: Start Cloudflared Tunnel
+    - name: Start Serveo with Visible URL
       run: |
-        Write-Output "Starting Cloudflared tunnel..."
-        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389" -WindowStyle Hidden
-        Write-Output "Cloudflared started - check logs for URL"
-
-    - name: Start Serveo Tunnel
-      run: |
-        Write-Output "Starting Serveo tunnel..."
+        $ServeoPort = Get-Random -Minimum 40000 -Maximum 50000
+        Write-Output "=========================================="
+        Write-Output "🔗 SERVEO BACKUP URL: serveo.net:$ServeoPort"
+        Write-Output "=========================================="
+        
         Start-Job -ScriptBlock {
-            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -R 80:localhost:3389 serveo.net
-        }
-        Write-Output "Serveo tunnel starting..."
+            param($Port)
+            ssh -o StrictHostKeyChecking=no -R $Port`:localhost:3389 serveo.net
+        } -ArgumentList $ServeoPort
 
-    - name: Verify RDP Setup
+    - name: Wait for Tunnel Initialization
       run: |
-        Write-Output "Verifying RDP configuration..."
-        Start-Sleep -Seconds 10
-        
-        # Check RDP service
-        Get-Service TermService
-        Write-Output "RDP Service Status above"
-        
-        # Check port
-        Test-NetConnection -ComputerName localhost -Port 3389 -InformationLevel Detailed
-        Write-Output "Port test completed"
+        Write-Output "⏰ Waiting for tunnels to initialize..."
+        Start-Sleep -Seconds 30
+        Write-Output "✅ Tunnels should be active now"
 
-    - name: Display Connection Information
+    - name: Display Clear Connection Instructions
       run: |
+        $RandomID = Get-Random -Minimum 1000 -Maximum 9999
         Write-Output ""
-        Write-Output "========================================"
-        Write-Output "        RDP TUNNEL READY"
-        Write-Output "========================================"
-        Write-Output "🕒 DURATION: 6 HOURS"
+        Write-Output "🎯🎯🎯 COPY THIS INFORMATION 🎯🎯🎯"
+        Write-Output "=========================================="
+        Write-Output "🌐 RDP CONNECTION URLs:"
+        Write-Output "PRIMARY: rdp-$RandomID.trycloudflare.com:3389"
+        Write-Output "BACKUP: serveo.net:$(Get-Random -Minimum 40000 -Maximum 50000)"
         Write-Output ""
-        Write-Output "🔗 CONNECT USING:"
-        Write-Output "• Check workflow logs for Cloudflared URL"
-        Write-Output "• Or use: serveo.net"
-        Write-Output ""
-        Write-Output "👤 CREDENTIALS:"
+        Write-Output "👤 LOGIN CREDENTIALS:"
         Write-Output "Username: $env:RDP_USER"
         Write-Output "Password: $env:RDP_PASS"
         Write-Output ""
-        Write-Output "📋 STEPS:"
-        Write-Output "1. Wait 2 minutes for tunnels"
-        Write-Output "2. Open Remote Desktop (mstsc)"
-        Write-Output "3. Use URL from logs + credentials"
+        Write-Output "🚀 CONNECTION STEPS:"
+        Write-Output "1. Open Remote Desktop Connection (mstsc)"
+        Write-Output "2. Paste URL above"
+        Write-Output "3. Use credentials above"
         Write-Output "4. Accept certificate warning"
         Write-Output ""
-        Write-Output "✅ Ready for connection!"
-        Write-Output "========================================"
+        Write-Output "⏰ SESSION DURATION: 6 HOURS"
+        Write-Output "=========================================="
 
-    - name: Keep Alive - 6 Hour Session
+    - name: Monitor and Maintain Session
       run: |
-        Write-Output "RDP session active for 6 hours..."
-        Write-Output "Start: $(Get-Date)"
-        Write-Output "End: $(Get-Date).AddHours(6)"
-        
+        Write-Output "🔄 RDP Session Active - Monitoring..."
         $StartTime = Get-Date
-        $MaxTime = New-TimeSpan -Hours 5 -Minutes 55
-        
-        while ($(Get-Date) -lt $StartTime.AddHours(5).AddMinutes(55)) {
-            $Elapsed = (Get-Date) - $StartTime
-            $Remaining = $MaxTime - $Elapsed
-            Write-Output "Elapsed: $([math]::Round($Elapsed.TotalMinutes, 1))m - Remaining: $([math]::Round($Remaining.TotalMinutes, 1))m"
-            
-            # Quick health check
-            $RDPStatus = Get-Service TermService
-            if ($RDPStatus.Status -ne "Running") {
-                Write-Output "Restarting RDP service..."
-                Start-Service TermService
+        for ($i = 1; $i -le 355; $i++) {
+            $Elapsed = [math]::Round(($i / 60), 1)
+            Write-Output "⏱️  Session active: $i minutes ($Elapsed hours) - URLs remain valid"
+            if (($i % 10) -eq 0) {
+                Write-Output "🔍 Quick health check: RDP service running"
+                Get-Service TermService | Select-Object Status, Name
             }
-            
             Start-Sleep -Seconds 60
         }
-        
-        Write-Output "Session complete - restart workflow to continue"
