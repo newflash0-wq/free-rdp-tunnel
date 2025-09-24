@@ -1,4 +1,4 @@
-name: Free RDP Tunnel - Cloudflared (Free)
+name: Free RDP Tunnel - Cloudflared (Free, retry)
 
 on:
   workflow_dispatch:
@@ -45,32 +45,118 @@ jobs:
         shell: pwsh
         run: |
           $cf = Join-Path $PWD 'cloudflared.exe'
+          Write-Output "Downloading cloudflared..."
           Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile $cf -UseBasicParsing
+          Write-Output "Downloaded cloudflared to $cf"
 
       - id: cloudflared-start
-        name: Start Cloudflared RDP Tunnel
+        name: Start Cloudflared RDP Tunnel (retry, non-fatal)
         shell: pwsh
+        continue-on-error: true
         run: |
           $log = Join-Path $PWD 'cloudflared.log'
           if (Test-Path $log) { Remove-Item $log -Force }
           $cf = Join-Path $PWD 'cloudflared.exe'
 
-          Write-Output "Starting cloudflared tunnel..."
-          Start-Process -FilePath $cf -ArgumentList 'tunnel','--url','rdp://localhost:3389' -RedirectStandardOutput $log -RedirectStandardError $log -WindowStyle Hidden
-
-          # Wait a bit for cloudflared to produce the URL
-          Start-Sleep -Seconds 60
-
-          # Attempt to read URL from log
+          # Retry settings
+          $maxAttempts = 6
+          $attempt = 0
           $found = $null
-          if (Test-Path $log) {
-            $content = Get-Content $log -Raw -ErrorAction SilentlyContinue
-            $m = [regex]::Match($content, 'https?://[A-Za-z0-9\-\._]+\.trycloudflare\.com(:\d+)?')
-            if ($m.Success) { $found = $m.Value }
+
+          Write-Output "Attempting to start cloudflared up to $maxAttempts times..."
+
+          while (($attempt -lt $maxAttempts) -and (-not $found)) {
+            $attempt++
+            Write-Output "=== Attempt $attempt of $maxAttempts ==="
+
+            # Kill any stray cloudflared processes from prior attempts
+            try {
+              Get-Process -Name cloudflared -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+            } catch {
+              # ignore
+            }
+
+            # Ensure log exists and append attempt header
+            Add-Content -Path $log -Value ("`n===== CLOUDLFARED ATTEMPT $attempt: $(Get-Date -Format o) =====`n")
+
+            # Start cloudflared in background with stdout/stderr redirected to the log
+            try {
+              $psi = New-Object System.Diagnostics.ProcessStartInfo
+              $psi.FileName = $cf
+              $psi.Arguments = "tunnel --url rdp://localhost:3389"
+              $psi.RedirectStandardOutput = $true
+              $psi.RedirectStandardError = $true
+              $psi.UseShellExecute = $false
+              $psi.CreateNoWindow = $true
+
+              $proc = New-Object System.Diagnostics.Process
+              $proc.StartInfo = $psi
+              $proc.Start() | Out-Null
+
+              # Async copy output to file for the duration of the attempt (so we can search it)
+              Start-Job -ScriptBlock {
+                param($pid, $logPath)
+                try {
+                  $p = Get-Process -Id $pid -ErrorAction Stop
+                  $stdOut = $p.StandardOutput
+                } catch {
+                  # Fallback: we will tail file later if needed
+                }
+
+                # Poll until process exits or for a limited time
+                $watchSeconds = 40
+                $elapsed = 0
+                while (($elapsed -lt $watchSeconds) -and (Get-Process -Id $pid -ErrorAction SilentlyContinue)) {
+                  Start-Sleep -Seconds 1
+                  $elapsed++
+                }
+              } -ArgumentList $proc.Id, $log | Out-Null
+
+            } catch {
+              Write-Output "Failed to start cloudflared process: $($_.Exception.Message)"
+            }
+
+            # Wait a suitable period for cloudflared to establish and print URL
+            $waitSeconds = 30
+            Write-Output "Waiting $waitSeconds seconds for cloudflared to initialize..."
+            Start-Sleep -Seconds $waitSeconds
+
+            # Read current log content and try to find the trycloudflare URL
+            if (Test-Path $log) {
+              $content = Get-Content -Path $log -Raw -ErrorAction SilentlyContinue
+              if ($content) {
+                $m = [regex]::Match($content, 'https?://[A-Za-z0-9\-\._]+\.trycloudflare\.com(:\d+)?')
+                if ($m.Success) {
+                  $found = $m.Value
+                  Write-Output "Found public URL in log: $found"
+                  break
+                } else {
+                  Write-Output "No trycloudflare URL found in attempt $attempt."
+                }
+              } else {
+                Write-Output "cloudflared log exists but is empty so far."
+              }
+            } else {
+              Write-Output "cloudflared.log not present yet."
+            }
+
+            # Not found yet: allow small cooldown, then kill process and retry
+            Write-Output "Restarting cloudflared for next attempt (if any)..."
+            try {
+              Get-Process -Name cloudflared -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+            } catch {
+              # ignore
+            }
+            Start-Sleep -Seconds 3
           }
 
-          if ($found) { Add-Content -Path $env:GITHUB_OUTPUT -Value ("CLOUD_URL=$found") }
-          else { Add-Content -Path $env:GITHUB_OUTPUT -Value "CLOUD_URL=UNKNOWN" }
+          if ($found) {
+            Write-Output "SUCCESS: Cloudflared public URL: $found"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value ("CLOUD_URL=$found")
+          } else {
+            Write-Output "WARNING: Could not discover trycloudflare URL after $maxAttempts attempts."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "CLOUD_URL=UNKNOWN"
+          }
 
       - name: Display Connection Info
         shell: pwsh
@@ -93,7 +179,9 @@ jobs:
       - name: Maintain Session (heartbeat)
         shell: pwsh
         run: |
-          for ($i=1; $i -le 360; $i++) {
-            Write-Output ("⏱️  Active: {0} minutes" -f $i)
+          Write-Output "🔄 Maintaining session output for visibility (prints heartbeat every minute)."
+          for ($i = 1; $i -le 360; $i++) {
+            $hours = [math]::Round($i / 60, 2)
+            Write-Output ("⏱️  Active: {0} minutes ({1} hours)" -f $i, $hours)
             Start-Sleep -Seconds 60
           }
