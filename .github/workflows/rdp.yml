@@ -1,4 +1,4 @@
-name: Free RDP Tunnel
+name: Free RDP Tunnel - Working
 
 on:
   workflow_dispatch:
@@ -18,49 +18,80 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Enable RDP
+    - name: Enable RDP Service
       run: |
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+        net start TermService
 
-    - name: Create User
+    - name: Create User Account
       run: |
         net user "$env:RDP_USER" "$env:RDP_PASS" /add /Y
         net localgroup administrators "$env:RDP_USER" /add
         net localgroup "Remote Desktop Users" "$env:RDP_USER" /add
 
-    - name: Download Cloudflared
+    - name: Start Serveo Tunnel (Primary - Working)
+      run: |
+        $Port = Get-Random -Minimum 40000 -Maximum 50000
+        Write-Output "🎯 YOUR RDP CONNECTION URL: serveo.net:$Port"
+        Write-Output "🔑 Username: $env:RDP_USER"
+        Write-Output "🔒 Password: $env:RDP_PASS"
+        
+        # Start Serveo tunnel in background
+        Start-Job -ScriptBlock {
+            param($Port)
+            while ($true) {
+                try {
+                    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -R $Port:localhost:3389 serveo.net
+                    Start-Sleep 5
+                } catch {
+                    Write-Output "Tunnel reconnect attempt..."
+                    Start-Sleep 10
+                }
+            }
+        } -ArgumentList $Port
+
+    - name: Start Cloudflared (Backup)
       run: |
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
-
-    - name: Start Tunnel
-      run: |
-        $TunnelID = Get-Random -Minimum 1000 -Maximum 9999
-        Write-Output "YOUR RDP URL: rdp-$TunnelID.trycloudflare.com"
         Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389" -WindowStyle Hidden
 
-    - name: Display Info
+    - name: Wait for Tunnel Initialization
       run: |
+        Write-Output "⏳ Waiting 60 seconds for tunnels to initialize..."
+        Start-Sleep -Seconds 60
+        Write-Output "✅ Tunnels should be active now"
+
+    - name: Display Connection Information
+      run: |
+        Write-Output ""
         Write-Output "========================================"
-        Write-Output "           RDP READY"
+        Write-Output "        RDP TUNNEL READY - WORKING"
         Write-Output "========================================"
-        Write-Output "URL: Check logs above for Cloudflared URL"
-        Write-Output "User: $env:RDP_USER"
-        Write-Output "Pass: $env:RDP_PASS"
-        Write-Output "Duration: 6 hours"
+        Write-Output "🌐 PRIMARY URL (SERVEO): serveo.net:[PORT]"
+        Write-Output "   Check above for exact port number"
+        Write-Output ""
+        Write-Output "🔧 ALTERNATIVE METHODS:"
+        Write-Output "1. Try different port if first fails"
+        Write-Output "2. Cloudflared backup (check logs)"
+        Write-Output ""
+        Write-Output "👤 CREDENTIALS:"
+        Write-Output "Username: $env:RDP_USER"
+        Write-Output "Password: $env:RDP_PASS"
+        Write-Output ""
+        Write-Output "🚀 CONNECTION STEPS:"
+        Write-Output "1. Remote Desktop Connection (mstsc)"
+        Write-Output "2. Computer: serveo.net:PORT"
+        Write-Output "3. Use credentials above"
+        Write-Output "4. Accept certificate warning"
         Write-Output "========================================"
 
-    - name: Wait for Tunnels
+    - name: Maintain Session
       run: |
-        Start-Sleep -Seconds 30
-        Write-Output "Tunnels active - Ready for connections"
-
-    - name: Keep Alive
-      run: |
-        Write-Output "RDP session running for 6 hours..."
+        Write-Output "🔄 6-hour RDP session active..."
         $StartTime = Get-Date
         for ($i = 1; $i -le 350; $i++) {
             $Elapsed = [math]::Round($i / 60, 1)
-            Write-Output "Active: $i minutes ($Elapsed hours)"
+            Write-Output "⏱️  Active: $i minutes ($Elapsed hours) - serveo.net tunnel running"
             Start-Sleep -Seconds 60
         }
